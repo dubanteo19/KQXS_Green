@@ -2,8 +2,7 @@ package org.core;
 
 import java.io.File;
 import java.io.IOException;
-import java.sql.ResultSet;
-import java.sql.SQLException;
+import java.sql.*;
 
 public class Controller {
     String baseUrl;
@@ -56,21 +55,107 @@ public class Controller {
     }
 
     public void fileToStaging() {
-        String sql = " LOAD DATA LOCAL INFILE '" + destination + "' " +
-                "INTO TABLE stg_lottery_data " +
-                "FIELDS TERMINATED BY ',' " +
-                "ENCLOSED BY '\"' " +
-                "LINES TERMINATED BY '\\n' " +
-                "IGNORE 1 LINES " +
-                "(region, station, @var_date, g1, g2, g3, g41, g42, g51, g52, g53, g54, g55, g56, g57, g6, g71, g72, g73, g8, g9) " +
-                "SET lottery_date = STR_TO_DATE(@var_date, '%d-%m-%Y');";
-
         try {
-            System.out.println("Loading csv to staging....");
-            dbHelperStaging.callProcedure(sql);
-            System.out.println("Loading successfully");
+//            1. Kiểm tra log xem dữ liệu của ngày hôm nay đã được crawl về file chưa
+            ResultSet logCheck = dbHelperCtl.executeQuery(
+                    "SELECT log_message FROM controller.logs " +
+                            "WHERE log_message = 'Load dữ liệu vào file csv' " +
+                            " AND status = 'Success'" +
+                            "AND file_id = ? " +
+                            "AND DATE(timeStart) = CURDATE() " +
+                            "ORDER BY timeStart DESC LIMIT 1",
+                    config.getId());
+
+            if (!logCheck.next()) {
+//            1.1. Nếu không tìm thấy log "Load dữ liệu về file" trong ngày hôm nay
+                dbHelperCtl.executeUpdate(
+                        "INSERT INTO controller.logs (file_id, status, log_message, timeStart) " +
+                                "VALUES (?, 'Failed', 'Không tìm thấy log dữ liệu được crawl hôm nay', NOW())",
+                        config.getId());
+                System.out.println("Không tìm thấy log dữ liệu được crawl hôm nay. Dừng tiến trình.");
+                return;
+            }
+
+//            2.  Ghi log trạng thái "Running"
+            int logId = dbHelperCtl.executeUpdateReturnGeneratedKeys(
+                    "INSERT INTO controller.logs (file_id, status, log_message, timeStart) " +
+                            "VALUES (?, 'Running', 'Load file to staging', NOW())",
+                    config.getId());
+
+            try {
+                // Chuẩn bị câu lệnh SQL cho việc gọi stored procedure
+                String loadProcedureCall = "{CALL load_data_to_temp_table(?)}"; // Cả input parameter
+
+                // Lấy ngày hôm nay (format yyyy-MM-dd)
+                String todayDate = java.time.LocalDate.now().toString();
+                Connection conn = DriverManager.getConnection(Constant.JDBC_STAGING, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
+                try {
+                    conn.setAutoCommit(false); // Tắt auto-commit
+
+                    // Gọi procedure load_data_to_temp_table và lấy câu lệnh SQL động
+                    CallableStatement loadStmt = conn.prepareCall(loadProcedureCall);
+                    loadStmt.setDate(1, java.sql.Date.valueOf(todayDate));
+
+                    // Execute and capture the result of SELECT statement
+                    ResultSet resultSet = loadStmt.executeQuery();
+                    String loadSql = null;
+                    if (resultSet.next()) {
+                        loadSql = resultSet.getString("dynamic_sql");
+                        System.out.println("Debug SQL: " + loadSql);
+                    }
+
+                    // Thực thi câu lệnh SQL động
+                    Statement stmt = conn.createStatement();
+                    stmt.execute(loadSql);
+                    System.out.println("SQL executed successfully.");
+
+                    // Gọi procedure move_data_to_staging_table
+                    String moveProcedureCall = "{CALL move_data_to_staging_table(?)}";
+                    CallableStatement stmt2 = conn.prepareCall(moveProcedureCall);
+                    stmt2.setDate(1, java.sql.Date.valueOf(todayDate));
+                    stmt2.execute();
+                    System.out.println("Stored procedure move_data_to_staging_table executed successfully.");
+
+                    conn.commit(); // Commit transaction
+                } catch (SQLException e) {
+                    conn.rollback();
+                    throw new RuntimeException("Transaction failed. Rolled back.", e);
+                }
+
+                // Kiểm tra dữ liệu trong bảng staging
+                ResultSet rs = dbHelperStaging.executeQuery("SELECT COUNT(*) AS rowCount FROM stg_lottery_data");
+                if (rs.next()) {
+                    int rowCount = rs.getInt("rowCount");
+                    System.out.println("Rows loaded into staging table: " + rowCount);
+                } else {
+                    System.out.println("No data found in staging table for date: " + todayDate);
+                }
+
+            } catch (SQLException e) {
+                System.err.println("SQL Exception occurred: " + e.getMessage());
+                e.printStackTrace();
+                throw new RuntimeException("Error while executing stored procedure.", e);
+            }
+
+            // Cập nhật log trạng thái "Failed"
+            dbHelperCtl.executeUpdate(
+                    "UPDATE controller.logs SET status = 'Success', timeEnd = NOW() WHERE log_id = ?",
+                    logId);
+
+            System.out.println("Dữ liệu đã được load thành công vào staging.");
         } catch (SQLException e) {
-            throw new RuntimeException(e);
+            try {
+                // Xử lý lỗi và ghi log Failed"
+                dbHelperCtl.executeUpdate(
+                        "UPDATE controller.logs SET status = 'Failed', log_message = ?, timeEnd = NOW() WHERE log_message = 'Load file to staging'",
+                        e.getMessage());
+            } catch (SQLException innerEx) {
+                throw new RuntimeException("Lỗi khi ghi log trạng thái thất bại.", innerEx);
+            }
+            throw new RuntimeException("Lỗi khi chạy quy trình load file vào staging.", e);
         }
     }
+
+
+
 }
