@@ -72,4 +72,36 @@ public class JDBCHelper {
             }
         }
     }
+
+    // Method to execute an update and return the generated key
+    public int executeUpdateReturnGeneratedKeys(String query, Object... params) throws SQLException {
+        try (PreparedStatement preparedStatement = connect().prepareStatement(query, Statement.RETURN_GENERATED_KEYS)) {
+            for (int i = 0; i < params.length; i++) {
+                preparedStatement.setObject(i + 1, params[i]);
+            }
+            preparedStatement.executeUpdate();
+            try (ResultSet generatedKeys = preparedStatement.getGeneratedKeys()) {
+                if (generatedKeys.next()) {
+                    return generatedKeys.getInt(1); // Return the generated key
+                }
+                throw new SQLException("No generated key returned.");
+            }
+        }
+    }
+
+    // Method to execute a stored procedure
+    public void executeProcedure(String procedureCall, Object... params) throws SQLException {
+        try (CallableStatement callableStatement = connect().prepareCall(procedureCall)) {
+            for (int i = 0; i < params.length; i++) {
+                callableStatement.setObject(i + 1, params[i]);
+            }
+            callableStatement.execute();
+        } catch (SQLException e) {
+            // Log lỗi stored procedure
+            System.err.println("Error executing procedure: " + procedureCall + " - " + e.getMessage());
+            throw e;
+        }
+    }
+
+
 }
