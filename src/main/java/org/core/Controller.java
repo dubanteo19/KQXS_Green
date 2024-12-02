@@ -10,6 +10,7 @@ public class Controller {
     Configuration config;
     JDBCHelper dbHelperCtl, dbHelperStaging, getDbHelperDataWarehouse;
     DataCrawler dataCrawler;
+    EmailService emailService = new EmailService();
     int configId;
 
     public Controller(int configId) {
@@ -56,7 +57,8 @@ public class Controller {
 
     public void fileToStaging() {
         try {
-//            1. Kiểm tra log xem dữ liệu của ngày hôm nay đã được crawl về file chưa
+//            1,2. Kết nối control.db ở trên
+//            3. Kiểm tra log xem dữ liệu của ngày hôm nay đã được crawl về file chưa
             ResultSet logCheck = dbHelperCtl.executeQuery(
                     "SELECT log_message FROM controller.logs " +
                             "WHERE log_message = 'Load dữ liệu vào file csv' " +
@@ -67,7 +69,7 @@ public class Controller {
                     config.getId());
 
             if (!logCheck.next()) {
-//            1.1. Nếu không tìm thấy log "Load dữ liệu về file" trong ngày hôm nay
+//            3.1. Insert log nếu không tìm thấy log "Load dữ liệu về file" trong ngày hôm nay
                 dbHelperCtl.executeUpdate(
                         "INSERT INTO controller.logs (file_id, status, log_message, timeStart) " +
                                 "VALUES (?, 'Failed', 'Không tìm thấy log dữ liệu được crawl hôm nay', NOW())",
@@ -75,8 +77,8 @@ public class Controller {
                 System.out.println("Không tìm thấy log dữ liệu được crawl hôm nay. Dừng tiến trình.");
                 return;
             }
-
-//            2.  Ghi log trạng thái "Running"
+//            5. Kết nối staging
+//            6.  Ghi log trạng thái "Running"
             int logId = dbHelperCtl.executeUpdateReturnGeneratedKeys(
                     "INSERT INTO controller.logs (file_id, status, log_message, timeStart) " +
                             "VALUES (?, 'Running', 'Load file to staging', NOW())",
@@ -91,7 +93,7 @@ public class Controller {
                 Connection conn = DriverManager.getConnection(Constant.JDBC_STAGING, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
                 try {
                     conn.setAutoCommit(false); // Tắt auto-commit
-
+//                    7,8. Gọi procedure load dữ liệu từ file vào bảng tạm
                     // Gọi procedure load_data_to_temp_table và lấy câu lệnh SQL động
                     CallableStatement loadStmt = conn.prepareCall(loadProcedureCall);
                     loadStmt.setDate(1, java.sql.Date.valueOf(todayDate));
@@ -108,7 +110,7 @@ public class Controller {
                     Statement stmt = conn.createStatement();
                     stmt.execute(loadSql);
                     System.out.println("SQL executed successfully.");
-
+//                    9. Insert dữ liệu từ bảng tạm vào staging
                     // Gọi procedure move_data_to_staging_table
                     String moveProcedureCall = "{CALL move_data_to_staging_table(?)}";
                     CallableStatement stmt2 = conn.prepareCall(moveProcedureCall);
@@ -137,12 +139,17 @@ public class Controller {
                 throw new RuntimeException("Error while executing stored procedure.", e);
             }
 
-            // Cập nhật log trạng thái "Failed"
+            //10.  Cập nhật log trạng thái "Success"
             dbHelperCtl.executeUpdate(
                     "UPDATE controller.logs SET status = 'Success', timeEnd = NOW() WHERE log_id = ?",
                     logId);
 
             System.out.println("Dữ liệu đã được load thành công vào staging.");
+//        11. Gửi mail...
+            String recipient = "21130315@st.hcmuaf.edu.vn";
+            String subject = "Thông báo: Quy trình load dữ liệu vào staging hoàn tất";
+            String body = "Chào bạn,\n\nQuy trình load dữ liệu từ file CSV vào staging ngày hôm nay đã hoàn tất thành công.\n\nTrân trọng,\nHệ thống";
+            emailService.sendEmail(recipient, subject, body);
         } catch (SQLException e) {
             try {
                 // Xử lý lỗi và ghi log Failed"
@@ -154,6 +161,8 @@ public class Controller {
             }
             throw new RuntimeException("Lỗi khi chạy quy trình load file vào staging.", e);
         }
+
+
     }
 
 
