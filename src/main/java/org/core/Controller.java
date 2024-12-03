@@ -1,5 +1,7 @@
 package org.core;
 
+import org.core.model.Configuration;
+
 import java.io.File;
 import java.io.IOException;
 import java.sql.ResultSet;
@@ -9,7 +11,7 @@ public class Controller {
     String baseUrl;
     String destination;
     Configuration config;
-    JDBCHelper dbHelperCtl, dbHelperStaging, getDbHelperDataWarehouse;
+    JDBCHelper dbHelperCtl, dbHelperStaging, dbHelperDataWarehouse;
     DataCrawler dataCrawler;
     MailService mailService;
     int configId;
@@ -19,6 +21,7 @@ public class Controller {
         dataCrawler = new DataCrawler();
         dbHelperCtl = new JDBCHelper(Constant.JDBC_CTL, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
         dbHelperStaging = new JDBCHelper(Constant.JDBC_STAGING, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
+        dbHelperDataWarehouse = new JDBCHelper(Constant.JDBC_DW, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
         initConfig();
         initMailConfig();
     }
@@ -103,6 +106,16 @@ public class Controller {
         String sql = "TRUNCATE TABLE stg_lottery_data";
         try {
             dbHelperStaging.callProcedure(sql);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void stagingToDW() {
+        System.out.println("Calling procedure loading from stating to data warehouse");
+        String sql = "{CALL LoadDataWarehouse()}";
+        try {
+            dbHelperStaging.procedure(sql);
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }

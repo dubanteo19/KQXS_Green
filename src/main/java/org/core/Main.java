@@ -24,6 +24,7 @@ public class Main {
         switch (process) {
             case "p1" -> controller.crawl();
             case "p2" -> controller.fileToStaging();
+            case "p3" -> controller.stagingToDW();
         }
     }
 }

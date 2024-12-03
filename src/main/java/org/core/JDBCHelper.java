@@ -45,6 +45,17 @@ public class JDBCHelper {
         statement.execute(sql);
     }
 
+    public void procedure(String sql) throws SQLException {
+        connect();
+        try {
+            CallableStatement callableStatement = connect().prepareCall(sql);
+            callableStatement.execute();
+        } catch (SQLException ex) {
+            System.out.println("Error: " + ex.getMessage());
+            ex.printStackTrace();
+        }
+    }
+
     // Method to execute INSERT, UPDATE, DELETE queries
     public int executeUpdate(String query, Object... params) throws SQLException {
         PreparedStatement preparedStatement = prepareStatement(query, params);
