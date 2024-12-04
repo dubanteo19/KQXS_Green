@@ -66,21 +66,37 @@ public class JDBCHelper {
     private PreparedStatement prepareStatement(String query, Object... params) throws SQLException {
         PreparedStatement preparedStatement = connect().prepareStatement(query);
         for (int i = 0; i < params.length; i++) {
-            preparedStatement.setObject(i + 1, params[i]);
+            Object param = params[i];
+            if (param instanceof Enum<?>) {
+                preparedStatement.setString(i + 1, ((Enum<?>) param).name());
+            } else if (param instanceof String) {
+                preparedStatement.setString(i + 1, (String) param);
+            } else if (param instanceof Integer) {
+                preparedStatement.setInt(i + 1, (Integer) param);
+            } else if (param instanceof Double) {
+                preparedStatement.setDouble(i + 1, (Double) param);
+            } else if (param instanceof Boolean) {
+                preparedStatement.setBoolean(i + 1, (Boolean) param);
+            } else if (param == null) {
+                preparedStatement.setNull(i + 1, Types.NULL);
+            } else {
+                preparedStatement.setObject(i + 1, param);
+            }
         }
         return preparedStatement;
     }
 
-    // Method to close ResultSet and PreparedStatement
-    public void closeResources(AutoCloseable... resources) {
-        for (AutoCloseable resource : resources) {
-            if (resource != null) {
-                try {
-                    resource.close();
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }
+
+    public boolean executeProcedure(String checkingSql) {
+        try {
+            CallableStatement callableStatement = connect().prepareCall(checkingSql);
+            callableStatement.registerOutParameter(1, Types.BOOLEAN);
+            // Execute the stored procedure
+            callableStatement.executeUpdate();
+            // Retrieve the OUT parameter value
+            return callableStatement.getBoolean(1);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
         }
     }
 }
