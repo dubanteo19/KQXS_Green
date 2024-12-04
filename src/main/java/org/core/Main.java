@@ -25,6 +25,7 @@ public class Main {
             case "p1" -> controller.crawl();
             case "p2" -> controller.fileToStaging();
             case "p3" -> controller.stagingToDW();
+            case "p4" -> controller.dwToDM();
         }
     }
 }

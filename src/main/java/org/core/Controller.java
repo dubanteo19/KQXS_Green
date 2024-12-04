@@ -1,6 +1,9 @@
 package org.core;
 
+import com.mysql.cj.log.Log;
+import org.core.enums.TaskName;
 import org.core.model.Configuration;
+import org.core.model.MailConfig;
 
 import java.io.File;
 import java.io.IOException;
@@ -8,16 +11,17 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 
 public class Controller {
-    String baseUrl;
     String destination;
     Configuration config;
     JDBCHelper dbHelperCtl, dbHelperStaging, dbHelperDataWarehouse;
     DataCrawler dataCrawler;
     MailService mailService;
+    LogService logService;
     int configId;
 
     public Controller(int configId) {
         this.configId = configId;
+        logService = LogService.getLogService();
         dataCrawler = new DataCrawler();
         dbHelperCtl = new JDBCHelper(Constant.JDBC_CTL, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
         dbHelperStaging = new JDBCHelper(Constant.JDBC_STAGING, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
@@ -71,12 +75,19 @@ public class Controller {
     public void crawl() {
         dataCrawler.init(config.getBaseUrl(), this.destination);
         try {
+            var message = "Extracting data from %s".formatted(config.getBaseUrl());
+            System.out.println(message);
             dataCrawler.crawlDaily();
-            System.out.println("Crawled data successfully, file saved at " + destination);
+            logService.insertLog(LogFactory.createExtractingDataLog(configId, message, TaskName.DATASOURCE_TO_FILE, 1));
+            var successMessage = "Crawled data successfully, file saved at %s".formatted(destination);
+            System.out.println(successMessage);
             System.out.println("Sending notification mail");
-            String body = "Crawled data form data source and save to csv file successfully";
-            mailService.sendEmail(Constant.DEFAULT_EMAIL, "KQXS green process 1", body);
+            mailService.sendEmail(Constant.DEFAULT_EMAIL, "KQXS green process 1 - Data source to file", successMessage);
+            logService.insertLog(LogFactory.createSuccessExtractLog(configId, successMessage, TaskName.DATASOURCE_TO_FILE, 1));
         } catch (IOException e) {
+            String errorMessage = "Crawled data from %s failed";
+            mailService.sendEmail(Constant.DEFAULT_EMAIL, "KQXS green process 1 - Data source to file", errorMessage);
+            logService.insertLog(LogFactory.createFailureExtractLog(configId, errorMessage, TaskName.DATASOURCE_TO_FILE, 1));
             throw new RuntimeException(e);
         }
     }
@@ -112,12 +123,40 @@ public class Controller {
     }
 
     public void stagingToDW() {
-        System.out.println("Calling procedure loading from stating to data warehouse");
+        var checkingMessage = "Checking if staging is available";
+        System.out.println(checkingMessage);
+        var checkingSql = "{CALL IsStagingDataAvailable(?)}";
+        var isAvailable = dbHelperStaging.executeProcedure(checkingSql);
+        if (!isAvailable) {
+            System.out.println("Staging is not available");
+            return;
+        }
+        var readyWarehouseMessage = "Staging is available";
+        System.out.println(readyWarehouseMessage);
+        var checkDuplicatedMessage = "Checking if staging is loaded";
+        System.out.println(checkDuplicatedMessage);
+        var isLoaded = dbHelperStaging.executeProcedure("{CALL IsStagingDataLoaded(?)}");
+        if (isLoaded) {
+            System.out.println("Staging is loaded");
+            return;
+        }
+        var loadingWarehouseMessage = "Calling procedure loading from staging to data warehouse";
+        System.out.println(loadingWarehouseMessage);
         String sql = "{CALL LoadDataWarehouse()}";
         try {
+            logService.insertLog(LogFactory.createLoadingWarehouseLog(configId, loadingWarehouseMessage, TaskName.STAGING_TO_DW, 1));
             dbHelperStaging.procedure(sql);
+            var successWarehouseMessage = "Loading from staging to data warehouse successfully";
+            logService.insertLog(LogFactory.createSuccessWarehouseLog(configId, successWarehouseMessage, TaskName.STAGING_TO_DW, 1));
+            System.out.println(successWarehouseMessage);
+            mailService.sendEmail(Constant.DEFAULT_EMAIL, "Processing 3", successWarehouseMessage);
         } catch (SQLException e) {
+            logService.insertLog(LogFactory.createFailureWarehouseLog(configId, e.getMessage(), TaskName.STAGING_TO_DW, 1));
             throw new RuntimeException(e);
         }
+    }
+
+    public void dwToDM() {
+
     }
 }

@@ -1,5 +1,7 @@
 package org.core;
 
+import org.core.model.MailConfig;
+
 import java.util.Properties;
 import javax.mail.*;
 import javax.mail.internet.*;
@@ -7,8 +9,6 @@ import javax.mail.internet.*;
 public class MailService {
     MailConfig mailConfig;
 
-    public static void main(String[] args) {
-    }
 
     public MailService(MailConfig mailConfig) {
         this.mailConfig = mailConfig;
