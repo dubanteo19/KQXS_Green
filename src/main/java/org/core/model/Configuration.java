@@ -1,4 +1,4 @@
-package org.core;
+package org.core.model;
 
 public class Configuration {
     private String id;
