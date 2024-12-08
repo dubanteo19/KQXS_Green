@@ -56,21 +56,28 @@ public class DataCrawler {
     }
 
     public void buildUrl() {
+        System.out.println("Building url");
         StringBuilder sb = new StringBuilder();
         sb.append(baseUrl);
         sb.append("/");
-        sb.append("date=");
+        sb.append("?date=");
         sb.append(date);
         this.url = sb.toString();
+        System.out.println("url built successfully %s".formatted(this.url));
     }
 
-    public void crawlDaily() throws IOException {
+    public void crawlTargetDate(String date) throws IOException {
         writeHeader();
+        this.date = LocalDate.now().format(DateTimeFormatter.ofPattern("dd-MM-yyyy"));
+        if (date != null) {
+            this.date = date;
+        }
+        buildUrl();
         Document doc = Jsoup.connect(url).get();
-        System.out.println("Parsing data");
         crawlRegion(doc, 2);
         crawlRegion(doc, 3);
     }
+
 
     public void crawlRegion(Document doc, int regionCode) {
         kqxs.clear();
@@ -148,7 +155,7 @@ public class DataCrawler {
     private void writeHeader() {
         try {
             System.out.println("Writing header");
-            FileWriter fw = new FileWriter(fileName, true);
+            FileWriter fw = new FileWriter(fileName, false);
             fw.write("region,station,date,g1,g2,g3,g41,g42,g51,g52,g53,g54,g55,g56,g57,g6,g71,g72,g73,g8,g9\n");
             fw.flush();
             fw.close();
