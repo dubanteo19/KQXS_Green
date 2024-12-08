@@ -16,6 +16,10 @@ public class MailService {
 
     public void sendEmail(String toEmail, String subject, String body) {
         // Set properties for the mail session
+        boolean send = true;
+        if (send) {
+            return;
+        }
         Properties properties = new Properties();
         properties.put("mail.smtp.auth", "true");
         properties.put("mail.smtp.starttls.enable", "true");

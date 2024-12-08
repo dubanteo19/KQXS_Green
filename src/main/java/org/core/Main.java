@@ -14,18 +14,25 @@ public class Main {
         }
         String process = args[0];
         int configId;
+        String lotteryDate;
         try {
             configId = Integer.parseInt(args[2]);
         } catch (Exception e) {
             System.out.println("Invalid configuration ID. It must be a number");
             return;
         }
+        try {
+            lotteryDate = args[4];
+        } catch (Exception e) {
+            lotteryDate = null;
+        }
         Controller controller = new Controller(configId);
         switch (process) {
-            case "p1" -> controller.crawl();
+            case "p1" -> controller.crawl(lotteryDate);
             case "p2" -> controller.fileToStaging();
             case "p3" -> controller.stagingToDW();
             case "p4" -> controller.dwToDM();
+            case "auto" -> controller.auto(lotteryDate);
         }
     }
 }

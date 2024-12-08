@@ -1,6 +1,5 @@
 package org.core;
 
-import com.mysql.cj.log.Log;
 import org.core.enums.TaskName;
 import org.core.model.Configuration;
 import org.core.model.MailConfig;
@@ -9,8 +8,11 @@ import java.io.File;
 import java.io.IOException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 
 public class Controller {
+    private static final DateTimeFormatter DATE_FOMATTER = DateTimeFormatter.ofPattern("dd-MM-yyyy");
     String destination;
     Configuration config;
     JDBCHelper dbHelperCtl, dbHelperStaging, dbHelperDataWarehouse;
@@ -69,15 +71,18 @@ public class Controller {
         System.out.println("p2 load file csv to staging database");
         System.out.println("p3 staging to data warehouse");
         System.out.println("p4 data warehouse to data mart");
+        System.out.println("auto automatically run all the jobs ");
         System.out.println("-c to specify configuration id");
+        System.out.println("-d to specify lottery date eg: 10-10-2025");
     }
 
-    public void crawl() {
+    // Trang se lam phan nay
+    public void crawl(String lotteryDate) {
         dataCrawler.init(config.getBaseUrl(), this.destination);
         try {
             var message = "Extracting data from %s".formatted(config.getBaseUrl());
             System.out.println(message);
-            dataCrawler.crawlDaily();
+            dataCrawler.crawlTargetDate(lotteryDate);
             logService.insertLog(LogFactory.createExtractingDataLog(configId, message, TaskName.DATASOURCE_TO_FILE, 1));
             var successMessage = "Crawled data successfully, file saved at %s".formatted(destination);
             System.out.println(successMessage);
@@ -92,20 +97,23 @@ public class Controller {
         }
     }
 
+
+    // Phan nay se thuoc ve Ngoc Diep
     public void fileToStaging() {
         truncateStaging();
-        String sql = " LOAD DATA LOCAL INFILE '" + destination + "' " +
-                "INTO TABLE stg_lottery_data " +
-                "FIELDS TERMINATED BY ',' " +
-                "ENCLOSED BY '\"' " +
-                "LINES TERMINATED BY '\\n' " +
-                "IGNORE 1 LINES " +
-                "(region, station, @var_date, g1, g2, g3, g41, g42, g51, g52, g53, g54, g55, g56, g57, g6, g71, g72, g73, g8, g9) " +
-                "SET lottery_date = STR_TO_DATE(@var_date, '%d-%m-%Y');";
-
         try {
-            System.out.println("Loading csv to staging....");
-            dbHelperStaging.callProcedure(sql);
+            dbHelperStaging.callProcedure("SET GLOBAL local_infile=true;");
+            String sql = """
+                        LOAD DATA LOCAL INFILE ?
+                        INTO TABLE stg_lottery_data
+                        FIELDS TERMINATED BY ','
+                        ENCLOSED BY '"'
+                        LINES TERMINATED BY '\n'
+                        IGNORE 1 LINES
+                        (region, station, @var_date, g1, g2, g3, g41, g42, g51, g52, g53, g54, g55, g56, g57, g6, g71, g72, g73, g8, g9)  
+                        SET lottery_date = STR_TO_DATE(@var_date, '%d-%m-%Y');
+                    """;
+            dbHelperStaging.executeUpdate(sql, destination);
             System.out.println("Loading successfully");
         } catch (SQLException e) {
             throw new RuntimeException(e);
@@ -122,6 +130,8 @@ public class Controller {
         }
     }
 
+    // This part belongs to dubanteo19
+    //
     public void stagingToDW() {
         var checkingMessage = "Checking if staging is available";
         System.out.println(checkingMessage);
@@ -156,7 +166,34 @@ public class Controller {
         }
     }
 
+    // Phan nay Thuong se chiu trach nhiem
     public void dwToDM() {
 
+    }
+
+    public void auto(String lotteryDate) {
+        try {
+            crawl(lotteryDate);
+            Thread.sleep(100);
+            fileToStaging();
+            Thread.sleep(100);
+            stagingToDW();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static void main(String[] args) {
+        Controller controller = new Controller(1);
+        controller.archive(365);
+    }
+
+    private void archive(int totalDays) {
+        LocalDate currentDate = LocalDate.now().minusDays(1);
+        for (int i = 0; i < totalDays; i++) {
+            String formattedDate = currentDate.format(DATE_FOMATTER);
+            auto(formattedDate);
+            currentDate = currentDate.minusDays(1);
+        }
     }
 }
