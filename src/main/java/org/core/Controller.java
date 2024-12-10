@@ -17,7 +17,7 @@ public class Controller {
     private static final DateTimeFormatter DATE_FOMATTER = DateTimeFormatter.ofPattern("dd-MM-yyyy");
     String destination;
     Configuration config;
-    JDBCHelper dbHelperCtl, dbHelperStaging, dbHelperDataWarehouse;
+    JDBCHelper dbHelperCtl, dbHelperStaging, dbHelperDataWarehouse, dbHelperDataMart;
     DataCrawler dataCrawler;
     MailService mailService;
     LogService logService;
@@ -34,6 +34,7 @@ public class Controller {
         dbHelperStaging = new JDBCHelper(PropertiesHelper.JDBC_STAGING, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
         dbHelperDataWarehouse = new JDBCHelper(PropertiesHelper.JDBC_DW, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
         logService = LogService.getLogService(dbHelperCtl);
+        dbHelperDataMart = new JDBCHelper(Constant.JDBC_DM, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
         initConfig();
         emailToSend = PropertiesHelper.DEFAULT_EMAIL;
         if (config != null) {
@@ -204,8 +205,51 @@ public class Controller {
 
     // Phan nay Thuong se chiu trach nhiem
     public void dwToDM() {
-        logService.insertLog(LogFactory.createReadyExtractLog(configId, "Datasource is ready to extract", TaskName.DW_TO_DM, 1));
+        // Kiểm tra dữ liệu có sẵn trong data warehouse
+        var checkingMessage = "Checking if data warehouse is available";
+        System.out.println(checkingMessage);
+        var checkingSql = "{CALL IsDataWarehouseAvailable(?)}";  // Giả sử đây là thủ tục lưu trữ kiểm tra tính sẵn có
+        var isAvailable = dbHelperDataWarehouse.executeProcedure(checkingSql);
+        if (!isAvailable) {
+            System.out.println("Data warehouse is not available");
+            logService.insertLog(LogFactory.createFailureWarehouseLog(configId, "Dữ liệu không có sẵn trong kho dữ liệu", TaskName.DW_TO_DM, 1));
+            return;
+        }
+
+        // Dữ liệu có sẵn trong data warehouse
+        var readyMessage = "Data warehouse is available";
+        System.out.println(readyMessage);
+        logService.insertLog(LogFactory.createReadyWarehouseLog(configId, readyMessage, TaskName.DW_TO_DM, 1));
+
+        // Kiểm tra xem dữ liệu đã được tải lên data mart chưa
+        var checkDuplicatedMessage = "Checking if data mart is loaded";
+        System.out.println(checkDuplicatedMessage);
+        var isLoaded = dbHelperDataWarehouse.executeProcedure("{CALL IsDataLoadedToDM(?)}");  // Thủ tục kiểm tra đã tải chưa
+        if (isLoaded) {
+            System.out.println("Data mart is loaded");
+            logService.insertLog(LogFactory.createSuccessDatamartLog(configId, "Dữ liệu đã được tải lên kho dữ liệu mart", TaskName.DW_TO_DM, 1));
+            return;
+        }
+
+        // Tiến hành tải dữ liệu từ data warehouse sang data mart
+        var loadingMessage = "Calling procedure loading from data warehouse to data mart";
+        System.out.println(loadingMessage);
+        logService.insertLog(LogFactory.createLoadingDatamartLog(configId, loadingMessage, TaskName.DW_TO_DM, 1));
+        String sql = "{CALL LoadDataMart()}";
+        try {
+            dbHelperDataWarehouse.procedure(sql);
+            var successMessage = "Loading from data warehouse to data mart successfully";
+            System.out.println(successMessage);
+            logService.insertLog(LogFactory.createSuccessDatamartLog(configId, successMessage, TaskName.DW_TO_DM, 1));
+            mailService.sendEmail(Constant.DEFAULT_EMAIL, "Processing 4", successMessage);
+        } catch (SQLException e) {
+            var errorMessage = "Error when loading from data warehouse to data mart" + e.getMessage();
+            System.out.println(errorMessage);
+            logService.insertLog(LogFactory.createFailureDatamartLog(configId, errorMessage, TaskName.DW_TO_DM, 1));
+            throw new RuntimeException(e);
+        }
     }
+
 
     public void auto(String lotteryDate) {
         try {
@@ -215,6 +259,7 @@ public class Controller {
             fileToStaging();
             Thread.sleep(200);
             stagingToDW();
+       
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
