@@ -1,6 +1,7 @@
 package org.core;
 
 import org.core.model.MailConfig;
+import org.core.util.PropertiesHelper;
 
 import java.util.Properties;
 import javax.mail.*;
@@ -16,8 +17,7 @@ public class MailService {
 
     public void sendEmail(String toEmail, String subject, String body) {
         // Set properties for the mail session
-        boolean send = true;
-        if (send) {
+        if (!PropertiesHelper.enableMailService) {
             return;
         }
         Properties properties = new Properties();
