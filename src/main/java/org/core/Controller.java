@@ -112,7 +112,9 @@ public class Controller {
 
     // Phan nay se thuoc ve Ngoc Diep
     public void fileToStaging() {
-        if (logService.getCurrentStatus() != LogStatus.READY_FILE) {
+        var currentStatus = logService.getCurrentStatus();
+        if (currentStatus != (LogStatus.READY_FILE)) {
+            System.out.println(currentStatus);
             crawl();
         }
         truncateStaging();
@@ -148,6 +150,7 @@ public class Controller {
             throw new RuntimeException(e);
         }
     }
+
     // This part belongs to dubanteo19
     //
     public void stagingToDW() {
@@ -201,16 +204,16 @@ public class Controller {
 
     // Phan nay Thuong se chiu trach nhiem
     public void dwToDM() {
-
+        logService.insertLog(LogFactory.createReadyExtractLog(configId, "Datasource is ready to extract", TaskName.DW_TO_DM, 1));
     }
 
     public void auto(String lotteryDate) {
         try {
             this.setDate(lotteryDate);
             crawl();
-            Thread.sleep(100);
+            Thread.sleep(200);
             fileToStaging();
-            Thread.sleep(100);
+            Thread.sleep(200);
             stagingToDW();
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
