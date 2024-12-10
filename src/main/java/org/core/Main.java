@@ -27,8 +27,9 @@ public class Main {
             lotteryDate = null;
         }
         Controller controller = new Controller(configId);
+        controller.setDate(lotteryDate);
         switch (process) {
-            case "p1" -> controller.crawl(lotteryDate);
+            case "p1" -> controller.crawl();
             case "p2" -> controller.fileToStaging();
             case "p3" -> controller.stagingToDW();
             case "p4" -> controller.dwToDM();

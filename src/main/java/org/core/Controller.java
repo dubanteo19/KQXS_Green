@@ -1,8 +1,10 @@
 package org.core;
 
+import org.core.enums.LogStatus;
 import org.core.enums.TaskName;
 import org.core.model.Configuration;
 import org.core.model.MailConfig;
+import org.core.util.PropertiesHelper;
 
 import java.io.File;
 import java.io.IOException;
@@ -20,15 +22,23 @@ public class Controller {
     MailService mailService;
     LogService logService;
     int configId;
+    String emailToSend;
+    private String lotteryDate;
 
     public Controller(int configId) {
         this.configId = configId;
-        logService = LogService.getLogService();
         dataCrawler = new DataCrawler();
-        dbHelperCtl = new JDBCHelper(Constant.JDBC_CTL, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
-        dbHelperStaging = new JDBCHelper(Constant.JDBC_STAGING, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
-        dbHelperDataWarehouse = new JDBCHelper(Constant.JDBC_DW, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
+        //load config to class
+        PropertiesHelper.loadProperties();
+        dbHelperCtl = new JDBCHelper(PropertiesHelper.JDBC_CTL, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
+        dbHelperStaging = new JDBCHelper(PropertiesHelper.JDBC_STAGING, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
+        dbHelperDataWarehouse = new JDBCHelper(PropertiesHelper.JDBC_DW, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
+        logService = LogService.getLogService(dbHelperCtl);
         initConfig();
+        emailToSend = PropertiesHelper.DEFAULT_EMAIL;
+        if (config != null) {
+            emailToSend = config.getEmailToSend();
+        }
         initMailConfig();
     }
 
@@ -59,6 +69,7 @@ public class Controller {
                 this.config.setBaseUrl(rs.getString("base_url"));
                 this.config.setFile_name(rs.getString("file_name"));
                 this.config.setFile_path(rs.getString("file_path"));
+                this.config.setEmailToSend(rs.getString("email_to_send"));
             }
             this.destination = config.getFile_path() + File.separator + config.getFile_name();
         } catch (SQLException e) {
@@ -77,21 +88,22 @@ public class Controller {
     }
 
     // Trang se lam phan nay
-    public void crawl(String lotteryDate) {
+    public void crawl() {
         dataCrawler.init(config.getBaseUrl(), this.destination);
         try {
             var message = "Extracting data from %s".formatted(config.getBaseUrl());
             System.out.println(message);
-            dataCrawler.crawlTargetDate(lotteryDate);
+            dataCrawler.crawlTargetDate(this.lotteryDate);
             logService.insertLog(LogFactory.createExtractingDataLog(configId, message, TaskName.DATASOURCE_TO_FILE, 1));
             var successMessage = "Crawled data successfully, file saved at %s".formatted(destination);
             System.out.println(successMessage);
             System.out.println("Sending notification mail");
-            mailService.sendEmail(Constant.DEFAULT_EMAIL, "KQXS green process 1 - Data source to file", successMessage);
+            mailService.sendEmail(PropertiesHelper.DEFAULT_EMAIL, "KQXS green process 1 - Data source to file", successMessage);
             logService.insertLog(LogFactory.createSuccessExtractLog(configId, successMessage, TaskName.DATASOURCE_TO_FILE, 1));
+            logService.insertLog(LogFactory.createReadyFileLog(configId, successMessage, TaskName.DATASOURCE_TO_FILE, 1));
         } catch (IOException e) {
             String errorMessage = "Crawled data from %s failed";
-            mailService.sendEmail(Constant.DEFAULT_EMAIL, "KQXS green process 1 - Data source to file", errorMessage);
+            mailService.sendEmail(PropertiesHelper.DEFAULT_EMAIL, "KQXS green process 1 - Data source to file", errorMessage);
             logService.insertLog(LogFactory.createFailureExtractLog(configId, errorMessage, TaskName.DATASOURCE_TO_FILE, 1));
             throw new RuntimeException(e);
         }
@@ -100,6 +112,9 @@ public class Controller {
 
     // Phan nay se thuoc ve Ngoc Diep
     public void fileToStaging() {
+        if (logService.getCurrentStatus() != LogStatus.READY_FILE) {
+            crawl();
+        }
         truncateStaging();
         try {
             dbHelperStaging.callProcedure("SET GLOBAL local_infile=true;");
@@ -114,7 +129,11 @@ public class Controller {
                         SET lottery_date = STR_TO_DATE(@var_date, '%d-%m-%Y');
                     """;
             dbHelperStaging.executeUpdate(sql, destination);
-            System.out.println("Loading successfully");
+            var mess = "Loading data from csv file to Staging successfully";
+            System.out.println(mess);
+            logService.insertLog(LogFactory.createSuccessStagingLog(configId, mess, TaskName.FILE_TO_STAGING, 1));
+            logService.insertLog(LogFactory.createReadyWarehouseLog(configId, mess, TaskName.FILE_TO_STAGING, 1));
+            mailService.sendEmail(emailToSend, "KQXs green process 2 - File to staging", mess);
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
@@ -129,38 +148,52 @@ public class Controller {
             throw new RuntimeException(e);
         }
     }
-
     // This part belongs to dubanteo19
     //
     public void stagingToDW() {
+        if (logService.getCurrentStatus() != LogStatus.READY_WAREHOUSE) {
+            fileToStaging();
+        }
         var checkingMessage = "Checking if staging is available";
         System.out.println(checkingMessage);
         var checkingSql = "{CALL IsStagingDataAvailable(?)}";
-        var isAvailable = dbHelperStaging.executeProcedure(checkingSql);
+        // 1.1 Checking is staging database has data available
+        // If available then continue otherwise stop and insert log
+        var isAvailable = dbHelperDataWarehouse.executeProcedure(checkingSql);
         if (!isAvailable) {
             System.out.println("Staging is not available");
+            logService.insertLog(LogFactory.createFailureWarehouseLog(configId, "Staging is not available", TaskName.STAGING_TO_DW, 1));
             return;
         }
         var readyWarehouseMessage = "Staging is available";
         System.out.println(readyWarehouseMessage);
         var checkDuplicatedMessage = "Checking if staging is loaded";
         System.out.println(checkDuplicatedMessage);
-        var isLoaded = dbHelperStaging.executeProcedure("{CALL IsStagingDataLoaded(?)}");
+        //1.2 Checking if staging data is loaded to data warehouse database before
+        // if loaded we just skip it
+        var isLoaded = dbHelperDataWarehouse.executeProcedure("{CALL IsStagingDataLoaded(?)}");
         if (isLoaded) {
             System.out.println("Staging is loaded");
             return;
         }
         var loadingWarehouseMessage = "Calling procedure loading from staging to data warehouse";
         System.out.println(loadingWarehouseMessage);
+        // 1.3 Calling stored procedure that loads data from staging database to data warehouse
         String sql = "{CALL LoadDataWarehouse()}";
         try {
+            //1.4 Inserting a log notify that loading is undergone
             logService.insertLog(LogFactory.createLoadingWarehouseLog(configId, loadingWarehouseMessage, TaskName.STAGING_TO_DW, 1));
-            dbHelperStaging.procedure(sql);
+            dbHelperDataWarehouse.procedure(sql);
+            // 1.5 if succeed we insert success log
             var successWarehouseMessage = "Loading from staging to data warehouse successfully";
             logService.insertLog(LogFactory.createSuccessWarehouseLog(configId, successWarehouseMessage, TaskName.STAGING_TO_DW, 1));
+            logService.insertLog(LogFactory.createReadyDatamartLog(configId, successWarehouseMessage, TaskName.STAGING_TO_DW, 1));
             System.out.println(successWarehouseMessage);
-            mailService.sendEmail(Constant.DEFAULT_EMAIL, "Processing 3", successWarehouseMessage);
+            // 1.6 and send mail
+            mailService.sendEmail(emailToSend, "KQSX green process 3 - Staging to DW result", successWarehouseMessage);
         } catch (SQLException e) {
+            // if failed a mail will be sent and a log also will be inserted to log table
+            mailService.sendEmail(emailToSend, "[Error]Staging to DW result", e.getMessage());
             logService.insertLog(LogFactory.createFailureWarehouseLog(configId, e.getMessage(), TaskName.STAGING_TO_DW, 1));
             throw new RuntimeException(e);
         }
@@ -173,7 +206,8 @@ public class Controller {
 
     public void auto(String lotteryDate) {
         try {
-            crawl(lotteryDate);
+            this.setDate(lotteryDate);
+            crawl();
             Thread.sleep(100);
             fileToStaging();
             Thread.sleep(100);
@@ -183,10 +217,6 @@ public class Controller {
         }
     }
 
-    public static void main(String[] args) {
-        Controller controller = new Controller(1);
-        controller.archive(365);
-    }
 
     private void archive(int totalDays) {
         LocalDate currentDate = LocalDate.now().minusDays(1);
@@ -195,5 +225,9 @@ public class Controller {
             auto(formattedDate);
             currentDate = currentDate.minusDays(1);
         }
+    }
+
+    public void setDate(String lotteryDate) {
+        this.lotteryDate = lotteryDate;
     }
 }

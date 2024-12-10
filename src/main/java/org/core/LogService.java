@@ -4,6 +4,7 @@ import org.core.enums.LogLevel;
 import org.core.enums.LogStatus;
 import org.core.model.MLog;
 
+import java.sql.ResultSet;
 import java.sql.SQLException;
 
 public class LogService {
@@ -14,11 +15,27 @@ public class LogService {
         this.dbHelperCtl = dbHelperCtl;
     }
 
-    public static LogService getLogService() {
+    public static LogService getLogService(JDBCHelper dbHelperCtl) {
         if (logService == null) {
-            return new LogService(new JDBCHelper(Constant.JDBC_CTL, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD));
+            return new LogService(dbHelperCtl);
         }
         return logService;
+    }
+
+    public LogStatus getCurrentStatus() {
+        var sql =
+                """
+                        SELECT * FROM log ORDER BY create_time DESC LIMIT 1;
+                        """;
+        try {
+            ResultSet resultSet = dbHelperCtl.executeQuery(sql);
+            while (resultSet.next()) {
+                LogStatus.valueOf(resultSet.getString("status"));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return null;
     }
 
     public void insertLog(MLog log) {

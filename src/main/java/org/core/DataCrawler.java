@@ -8,6 +8,7 @@ import org.jsoup.select.Elements;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -52,11 +53,9 @@ public class DataCrawler {
         this.baseUrl = baseUrl;
         this.destination = destination;
         this.fileName = destination;
-        buildUrl();
     }
 
     public void buildUrl() {
-        System.out.println("Building url");
         StringBuilder sb = new StringBuilder();
         sb.append(baseUrl);
         sb.append("/");
@@ -68,7 +67,12 @@ public class DataCrawler {
 
     public void crawlTargetDate(String date) throws IOException {
         writeHeader();
-        this.date = LocalDate.now().format(DateTimeFormatter.ofPattern("dd-MM-yyyy"));
+        LocalDateTime now = LocalDateTime.now();
+        boolean isDataAvailable = isDataAvailable();
+        if (!isDataAvailable) {
+        }
+        now = now.minusDays(1);
+        this.date = now.format(DateTimeFormatter.ofPattern("dd-MM-yyyy"));
         if (date != null) {
             this.date = date;
         }
@@ -76,6 +80,14 @@ public class DataCrawler {
         Document doc = Jsoup.connect(url).get();
         crawlRegion(doc, 2);
         crawlRegion(doc, 3);
+    }
+
+    private boolean isDataAvailable() {
+        var now = LocalDateTime.now();
+        if (now.getHour() == 16) {
+            return now.getMinute() <= 30;
+        }
+        return now.getHour() > 16;
     }
 
 
