@@ -25,12 +25,13 @@ public class LogService {
     public LogStatus getCurrentStatus() {
         var sql =
                 """
-                        SELECT * FROM log ORDER BY create_time DESC LIMIT 1;
+                        SELECT * FROM log ORDER BY id DESC LIMIT 1;
                         """;
         try {
             ResultSet resultSet = dbHelperCtl.executeQuery(sql);
             while (resultSet.next()) {
-                LogStatus.valueOf(resultSet.getString("status"));
+                var status = resultSet.getString("status");
+                return LogStatus.valueOf(status);
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);

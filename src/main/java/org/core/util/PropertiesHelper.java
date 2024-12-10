@@ -17,7 +17,7 @@ public class PropertiesHelper {
     public static void loadProperties() {
         Properties prop = new Properties();
         try {
-            FileInputStream input = new FileInputStream("src/main/resources/config.properties");
+            FileInputStream input = new FileInputStream("config.properties");
             prop.load(input);
             DEFAULT_EMAIL = prop.getProperty("default_email");
             JDBC_USERNAME = prop.getProperty("username");
