@@ -112,6 +112,7 @@ public class Controller {
 
 
     // Phan nay se thuoc ve Ngoc Diep
+
     //1. Khởi tạo kết nối control.db
     //2. Kết nối đến controller.config
     public void fileToStaging() {
@@ -123,8 +124,32 @@ public class Controller {
         }
         //4. Truncate bảng staging
         truncateStaging();
+        try {
+            dbHelperStaging.callProcedure("SET GLOBAL local_infile=true;");
+            String sql = """
+                        LOAD DATA LOCAL INFILE ?
+                        INTO TABLE stg_lottery_data
+                        FIELDS TERMINATED BY ','
+                        ENCLOSED BY '"'
+                        LINES TERMINATED BY '\n'
+                        IGNORE 1 LINES
+                        (region, station, @var_date, g1, g2, g3, g41, g42, g51, g52, g53, g54, g55, g56, g57, g6, g71, g72, g73, g8, g9)  
+                        SET lottery_date = STR_TO_DATE(@var_date, '%d-%m-%Y');
+                    """;
+            dbHelperStaging.executeUpdate(sql, destination);
+            var mess = "Loading data from csv file to Staging successfully";
+            System.out.println(mess);
+            logService.insertLog(LogFactory.createSuccessStagingLog(configId, mess, TaskName.FILE_TO_STAGING, 1));
+            logService.insertLog(LogFactory.createReadyWarehouseLog(configId, mess, TaskName.FILE_TO_STAGING, 1));
+            mailService.sendEmail(emailToSend, "KQXs green process 2 - File to staging", mess);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
-
+    private void truncateStaging() {
+        System.out.println("Truncating staging database...");
+        String sql = "TRUNCATE TABLE stg_lottery_data";
         try {
             //5. Lấy đường dẫn file csv cần load
             //6. Kết nối đến staging db
