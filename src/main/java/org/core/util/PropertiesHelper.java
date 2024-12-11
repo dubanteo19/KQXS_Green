@@ -9,6 +9,7 @@ public class PropertiesHelper {
     public static String JDBC_CTL;
     public static String JDBC_STAGING;
     public static String JDBC_DW;
+    public static String JDBC_DM;
     public static String JDBC_USERNAME;
     public static String JDBC_PASSWORD;
     public static String DEFAULT_EMAIL;
@@ -26,6 +27,7 @@ public class PropertiesHelper {
             JDBC_DW = prop.getProperty("dw");
             JDBC_STAGING = prop.getProperty("staging");
             JDBC_CTL = prop.getProperty("ctl");
+            JDBC_DM = prop.getProperty("dm");
         } catch (IOException e) {
             throw new RuntimeException(e);
         }

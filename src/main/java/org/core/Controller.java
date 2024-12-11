@@ -33,8 +33,8 @@ public class Controller {
         dbHelperCtl = new JDBCHelper(PropertiesHelper.JDBC_CTL, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
         dbHelperStaging = new JDBCHelper(PropertiesHelper.JDBC_STAGING, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
         dbHelperDataWarehouse = new JDBCHelper(PropertiesHelper.JDBC_DW, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
-        logService = LogService.getLogService(dbHelperCtl);
         dbHelperDataMart = new JDBCHelper(Constant.JDBC_DM, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
+        logService = LogService.getLogService(dbHelperCtl);
         initConfig();
         emailToSend = PropertiesHelper.DEFAULT_EMAIL;
         if (config != null) {
@@ -242,44 +242,52 @@ public class Controller {
 
     // Phan nay Thuong se chiu trach nhiem
     public void dwToDM() {
-        // Kiểm tra dữ liệu có sẵn trong data warehouse
+        // 1. Kiểm tra data warehouse có sẵn không
         var checkingMessage = "Checking if data warehouse is available";
         System.out.println(checkingMessage);
-        var checkingSql = "{CALL IsDataWarehouseAvailable(?)}";  // Giả sử đây là thủ tục lưu trữ kiểm tra tính sẵn có
+        var checkingSql = "{CALL IsDataWarehouseAvailable(?)}";
         var isAvailable = dbHelperDataWarehouse.executeProcedure(checkingSql);
+
+        // 1.1 Nếu data warehouse không khả dụng thì dừng lại và ghi log
         if (!isAvailable) {
             System.out.println("Data warehouse is not available");
             logService.insertLog(LogFactory.createFailureWarehouseLog(configId, "Dữ liệu không có sẵn trong kho dữ liệu", TaskName.DW_TO_DM, 1));
             return;
         }
 
-        // Dữ liệu có sẵn trong data warehouse
+        // 1.2 Nếu data warehouse sẵn sàng, ghi log
         var readyMessage = "Data warehouse is available";
         System.out.println(readyMessage);
         logService.insertLog(LogFactory.createReadyWarehouseLog(configId, readyMessage, TaskName.DW_TO_DM, 1));
 
-        // Kiểm tra xem dữ liệu đã được tải lên data mart chưa
+        // 2. Kiểm tra xem data mart đã được tải chưa
         var checkDuplicatedMessage = "Checking if data mart is loaded";
         System.out.println(checkDuplicatedMessage);
         var isLoaded = dbHelperDataWarehouse.executeProcedure("{CALL IsDataLoadedToDM(?)}");  // Thủ tục kiểm tra đã tải chưa
+
+        // 2.1 Nếu dữ liệu đã được tải, thì không cần làm gì thêm
         if (isLoaded) {
             System.out.println("Data mart is loaded");
             logService.insertLog(LogFactory.createSuccessDatamartLog(configId, "Dữ liệu đã được tải lên kho dữ liệu mart", TaskName.DW_TO_DM, 1));
             return;
         }
 
-        // Tiến hành tải dữ liệu từ data warehouse sang data mart
+        // 3. Gọi procedure để tải dữ liệu từ data warehouse lên data mart
         var loadingMessage = "Calling procedure loading from data warehouse to data mart";
         System.out.println(loadingMessage);
+        // 3.1 Thêm log thông báo quá trình tải đang thực hiện
         logService.insertLog(LogFactory.createLoadingDatamartLog(configId, loadingMessage, TaskName.DW_TO_DM, 1));
         String sql = "{CALL LoadDataMart()}";
         try {
             dbHelperDataWarehouse.procedure(sql);
+
+            // 3.2 Nếu thành công, ghi log success và gửi email thông báo
             var successMessage = "Loading from data warehouse to data mart successfully";
             System.out.println(successMessage);
             logService.insertLog(LogFactory.createSuccessDatamartLog(configId, successMessage, TaskName.DW_TO_DM, 1));
             mailService.sendEmail(Constant.DEFAULT_EMAIL, "Processing 4", successMessage);
         } catch (SQLException e) {
+            // 3.3 Nếu gặp lỗi, ghi log lỗi và gửi email thông báo lỗi
             var errorMessage = "Error when loading from data warehouse to data mart" + e.getMessage();
             System.out.println(errorMessage);
             logService.insertLog(LogFactory.createFailureDatamartLog(configId, errorMessage, TaskName.DW_TO_DM, 1));
@@ -296,6 +304,8 @@ public class Controller {
             fileToStaging();
             Thread.sleep(200);
             stagingToDW();
+            Thread.sleep(200);
+            dwToDM();
        
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
