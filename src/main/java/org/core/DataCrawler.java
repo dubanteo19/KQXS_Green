@@ -7,12 +7,13 @@ import org.jsoup.select.Elements;
 
 import java.io.FileWriter;
 import java.io.IOException;
+import java.net.Socket;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import javax.mail.*;
+import javax.mail.internet.*;
 
 public class DataCrawler {
     String baseUrl;
@@ -44,7 +45,7 @@ public class DataCrawler {
             fw.flush();
             fw.close();
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            logError("Error writing row to CSV: " + e.getMessage());
         }
     }
 
@@ -52,24 +53,51 @@ public class DataCrawler {
         this.baseUrl = baseUrl;
         this.destination = destination;
         this.fileName = destination;
-        buildUrl();
     }
 
     public void buildUrl() {
-        StringBuilder sb = new StringBuilder();
-        sb.append(baseUrl);
-        sb.append("/");
-        sb.append("date=");
-        sb.append(date);
-        this.url = sb.toString();
+        if (baseUrl != null && !baseUrl.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            sb.append(baseUrl);
+            sb.append("/");
+            sb.append("?date=");
+            sb.append(date);
+            this.url = sb.toString();
+            log("URL built successfully: " + this.url);
+        } else {
+            logError("Base URL is not set or is empty!");
+        }
     }
 
-    public void crawlDaily() throws IOException {
+    public void crawlTargetDate(String date) throws IOException {
         writeHeader();
-        Document doc = Jsoup.connect(url).get();
-        System.out.println("Parsing data");
-        crawlRegion(doc, 2);
-        crawlRegion(doc, 3);
+        LocalDateTime now = LocalDateTime.now();
+        boolean isDataAvailable = isDataAvailable();
+        if (!isDataAvailable) {
+            logError("Data not available for the current date or time.");
+        }
+        now = now.minusDays(1);
+        this.date = now.format(DateTimeFormatter.ofPattern("dd-MM-yyyy"));
+        if (date != null) {
+            this.date = date;
+        }
+        buildUrl();
+        try {
+            Document doc = Jsoup.connect(url).get();
+            crawlRegion(doc, 2);
+            crawlRegion(doc, 3);
+        } catch (IOException e) {
+            logError("Error during crawling: " + e.getMessage());
+            throw e;
+        }
+    }
+
+    private boolean isDataAvailable() {
+        var now = LocalDateTime.now();
+        if (now.getHour() == 16) {
+            return now.getMinute() <= 30;
+        }
+        return now.getHour() > 16;
     }
 
     public void crawlRegion(Document doc, int regionCode) {
@@ -128,34 +156,35 @@ public class DataCrawler {
             this.date = currentDate.format(dateTimeFormatter);
             currentDate = currentDate.minusDays(1);
             buildUrl();
-            Document doc = Jsoup.connect(url).get();
-            Elements elements = doc.getElementsByAttribute("data-prize");
-            if (elements.isEmpty()) continue;
-            List<String> kqxs = new ArrayList<>();
-            kqxs.add(this.region);
-            kqxs.add(this.station);
-            kqxs.add(this.date);
-            int count = 1;
-            for (Element element : elements) {
-                System.out.println("Crawling date");
-                String value = element.attr("data-value");
-                kqxs.add(value);
+            try {
+                Document doc = Jsoup.connect(url).get();
+                Elements elements = doc.getElementsByAttribute("data-prize");
+                if (elements.isEmpty()) continue;
+                List<String> kqxs = new ArrayList<>();
+                kqxs.add(this.region);
+                kqxs.add(this.station);
+                kqxs.add(this.date);
+                int count = 1;
+                for (Element element : elements) {
+                    String value = element.attr("data-value");
+                    kqxs.add(value);
+                }
+                addRow(kqxs);
+            } catch (IOException e) {
+                logError("Error during crawling for date " + this.date + ": " + e.getMessage());
             }
-            addRow(kqxs);
         }
     }
 
     private void writeHeader() {
         try {
-            System.out.println("Writing header");
-            FileWriter fw = new FileWriter(fileName, true);
+            FileWriter fw = new FileWriter(fileName, false);
             fw.write("region,station,date,g1,g2,g3,g41,g42,g51,g52,g53,g54,g55,g56,g57,g6,g71,g72,g73,g8,g9\n");
             fw.flush();
             fw.close();
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            logError("Error writing header to CSV: " + e.getMessage());
         }
-
     }
 
     private LocalDate getLocalDate() {
@@ -163,4 +192,74 @@ public class DataCrawler {
         return LocalDate.of(Integer.parseInt(split[2]), Integer.parseInt(split[1]), Integer.parseInt(split[0]));
     }
 
+    public static void main(String[] args) {
+        DataCrawler crawler = new DataCrawler();
+
+        // Thiết lập base URL và đích đến cho crawl
+        String destination = "E:/kqxs_daily.csv"; // Đổi đường dẫn file đến ổ E:
+        crawler.init("https://your-lottery-website.com", destination);
+
+        // Tạo URL cho ngày cụ thể hoặc sử dụng ngày hiện tại
+        try {
+            if (args.length > 0 && args[0].equals("-c")) {
+                String configId = args[1]; // Ví dụ: "-c 1"
+                // Xử lý cài đặt cấu hình từ `configId` ở đây
+                // ...
+            } else {
+                crawler.crawlTargetDate(null); // Sử dụng ngày hiện tại
+            }
+        } catch (IOException e) {
+            crawler.logError("Error during crawling: " + e.getMessage());
+        }
+
+        // Export kết quả ra file CSV vào ổ E:
+        crawler.exportCSV(crawler.kqxs);
+    }
+
+    private String fromEmail = "21130211@st.hcmuaf.edu.vn";
+    private String toEmail = "tbui35497@gmail.com";
+    private String host = "smtp.example.com";
+    private String port = "587";
+    private String user = "your-username";
+    private String password = "your-password";
+
+    public void sendEmail(String subject, String body) {
+        Properties properties = System.getProperties();
+        properties.setProperty("mail.smtp.host", host);
+        properties.setProperty("mail.smtp.port", port);
+        properties.setProperty("mail.smtp.auth", "true");
+        properties.setProperty("mail.smtp.starttls.enable", "true");
+
+        Session session = Session.getInstance(properties, new javax.mail.Authenticator() {
+            protected PasswordAuthentication getPasswordAuthentication() {
+                return new PasswordAuthentication(user, password);
+            }
+        });
+
+        try {
+            MimeMessage message = new MimeMessage(session);
+            message.setFrom(new InternetAddress(fromEmail));
+            message.addRecipient(Message.RecipientType.TO, new InternetAddress(toEmail));
+            message.setSubject(subject);
+            message.setText(body);
+
+            Transport.send(message);
+            log("Sent message successfully....");
+        } catch (MessagingException mex) {
+            logError("Error while sending email: " + mex.getMessage());
+        }
+    }
+
+    private void log(String message) {
+        System.out.println("INFO: " + message);
+    }
+
+    private void logError(String message) {
+        System.err.println("ERROR: " + message);
+        try (FileWriter fw = new FileWriter("error_log.txt", true)) {
+            fw.write(LocalDateTime.now() + ": " + message + "\n");
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
 }

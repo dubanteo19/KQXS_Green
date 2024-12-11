@@ -1,24 +1,64 @@
 package org.core;
 
+import org.core.enums.LogStatus;
+import org.core.enums.TaskName;
+import org.core.model.Configuration;
+import org.core.model.MailConfig;
+import org.core.util.PropertiesHelper;
+
 import java.io.File;
 import java.io.IOException;
-import java.sql.*;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 
 public class Controller {
-    String baseUrl;
+    private static final DateTimeFormatter DATE_FOMATTER = DateTimeFormatter.ofPattern("dd-MM-yyyy");
     String destination;
     Configuration config;
-    JDBCHelper dbHelperCtl, dbHelperStaging, getDbHelperDataWarehouse;
+    JDBCHelper dbHelperCtl, dbHelperStaging, dbHelperDataWarehouse, dbHelperDataMart;
     DataCrawler dataCrawler;
-    EmailService emailService = new EmailService();
+    MailService mailService;
+    LogService logService;
     int configId;
+    String emailToSend;
+    private String lotteryDate;
 
     public Controller(int configId) {
         this.configId = configId;
         dataCrawler = new DataCrawler();
-        dbHelperCtl = new JDBCHelper(Constant.JDBC_CTL, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
-        dbHelperStaging = new JDBCHelper(Constant.JDBC_STAGING, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
+        //load config to class
+        PropertiesHelper.loadProperties();
+        dbHelperCtl = new JDBCHelper(PropertiesHelper.JDBC_CTL, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
+        dbHelperStaging = new JDBCHelper(PropertiesHelper.JDBC_STAGING, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
+        dbHelperDataWarehouse = new JDBCHelper(PropertiesHelper.JDBC_DW, PropertiesHelper.JDBC_USERNAME, PropertiesHelper.JDBC_PASSWORD);
+        logService = LogService.getLogService(dbHelperCtl);
+        dbHelperDataMart = new JDBCHelper(Constant.JDBC_DM, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
         initConfig();
+        emailToSend = PropertiesHelper.DEFAULT_EMAIL;
+        if (config != null) {
+            emailToSend = config.getEmailToSend();
+        }
+        initMailConfig();
+    }
+
+    private void initMailConfig() {
+        try {
+            ResultSet rs = dbHelperCtl.executeQuery("select * from mail_config");
+            MailConfig mailConfig = null;
+            while (rs.next()) {
+                mailConfig = new MailConfig();
+                mailConfig.setId(rs.getInt("id"));
+                mailConfig.setPort(rs.getInt("port"));
+                mailConfig.setHost(rs.getString("host"));
+                mailConfig.setPassword(rs.getString("password"));
+                mailConfig.setUsername(rs.getString("username"));
+            }
+            this.mailService = new MailService(mailConfig);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public void initConfig() {
@@ -30,6 +70,7 @@ public class Controller {
                 this.config.setBaseUrl(rs.getString("base_url"));
                 this.config.setFile_name(rs.getString("file_name"));
                 this.config.setFile_path(rs.getString("file_path"));
+                this.config.setEmailToSend(rs.getString("email_to_send"));
             }
             this.destination = config.getFile_path() + File.separator + config.getFile_name();
         } catch (SQLException e) {
@@ -42,129 +83,211 @@ public class Controller {
         System.out.println("p2 load file csv to staging database");
         System.out.println("p3 staging to data warehouse");
         System.out.println("p4 data warehouse to data mart");
+        System.out.println("auto automatically run all the jobs ");
         System.out.println("-c to specify configuration id");
+        System.out.println("-d to specify lottery date eg: 10-10-2025");
     }
 
+    // Trang se lam phan nay
     public void crawl() {
         dataCrawler.init(config.getBaseUrl(), this.destination);
         try {
-            dataCrawler.crawlDaily();
-            System.out.println("crawled data successfully, file saved at " + destination);
+            var message = "Extracting data from %s".formatted(config.getBaseUrl());
+            System.out.println(message);
+            dataCrawler.crawlTargetDate(this.lotteryDate);
+            logService.insertLog(LogFactory.createExtractingDataLog(configId, message, TaskName.DATASOURCE_TO_FILE, 1));
+            var successMessage = "Crawled data successfully, file saved at %s".formatted(destination);
+            System.out.println(successMessage);
+            System.out.println("Sending notification mail");
+            mailService.sendEmail(PropertiesHelper.DEFAULT_EMAIL, "KQXS green process 1 - Data source to file", successMessage);
+            logService.insertLog(LogFactory.createSuccessExtractLog(configId, successMessage, TaskName.DATASOURCE_TO_FILE, 1));
+            logService.insertLog(LogFactory.createReadyFileLog(configId, successMessage, TaskName.DATASOURCE_TO_FILE, 1));
         } catch (IOException e) {
+            String errorMessage = "Crawled data from %s failed";
+            mailService.sendEmail(PropertiesHelper.DEFAULT_EMAIL, "KQXS green process 1 - Data source to file", errorMessage);
+            logService.insertLog(LogFactory.createFailureExtractLog(configId, errorMessage, TaskName.DATASOURCE_TO_FILE, 1));
             throw new RuntimeException(e);
         }
     }
 
+
+    // Phan nay se thuoc ve Ngoc Diep
+    //1. Khởi tạo kết nối control.db
+    //2. Kết nối đến controller.config
     public void fileToStaging() {
+        //3. Kiểm tra hôm nay dữ liệu đã được crawl về chưa
+        var currentStatus = logService.getCurrentStatus();
+        if (currentStatus != (LogStatus.READY_FILE)) {
+            System.out.println(currentStatus);
+            crawl();
+        }
+        //4. Truncate bảng staging
+        truncateStaging();
+
+
         try {
-//            1,2. Kết nối control.db ở trên
-//            3. Kiểm tra log xem dữ liệu của ngày hôm nay đã được crawl về file chưa
-            ResultSet logCheck = dbHelperCtl.executeQuery(
-                    "SELECT log_message FROM controller.logs " +
-                            "WHERE log_message = 'Load dữ liệu vào file csv' " +
-                            " AND status = 'Success'" +
-                            "AND file_id = ? " +
-                            "AND DATE(timeStart) = CURDATE() " +
-                            "ORDER BY timeStart DESC LIMIT 1",
-                    config.getId());
-
-            if (!logCheck.next()) {
-//            3.1. Insert log nếu không tìm thấy log "Load dữ liệu về file" trong ngày hôm nay
-                dbHelperCtl.executeUpdate(
-                        "INSERT INTO controller.logs (file_id, status, log_message, timeStart) " +
-                                "VALUES (?, 'Failed', 'Không tìm thấy log dữ liệu được crawl hôm nay', NOW())",
-                        config.getId());
-                System.out.println("Không tìm thấy log dữ liệu được crawl hôm nay. Dừng tiến trình.");
-                return;
-            }
-//            5. Kết nối staging
-//            6.  Ghi log trạng thái "Running"
-            int logId = dbHelperCtl.executeUpdateReturnGeneratedKeys(
-                    "INSERT INTO controller.logs (file_id, status, log_message, timeStart) " +
-                            "VALUES (?, 'Running', 'Load file to staging', NOW())",
-                    config.getId());
-
-            try {
-                // Chuẩn bị câu lệnh SQL cho việc gọi stored procedure
-                String loadProcedureCall = "{CALL load_data_to_temp_table(?)}"; // Cả input parameter
-
-                // Lấy ngày hôm nay (format yyyy-MM-dd)
-                String todayDate = java.time.LocalDate.now().toString();
-                Connection conn = DriverManager.getConnection(Constant.JDBC_STAGING, Constant.JDBC_USERNAME, Constant.JDBC_PASSWORD);
-                try {
-                    conn.setAutoCommit(false); // Tắt auto-commit
-//                    7,8. Gọi procedure load dữ liệu từ file vào bảng tạm
-                    // Gọi procedure load_data_to_temp_table và lấy câu lệnh SQL động
-                    CallableStatement loadStmt = conn.prepareCall(loadProcedureCall);
-                    loadStmt.setDate(1, java.sql.Date.valueOf(todayDate));
-
-                    // Execute and capture the result of SELECT statement
-                    ResultSet resultSet = loadStmt.executeQuery();
-                    String loadSql = null;
-                    if (resultSet.next()) {
-                        loadSql = resultSet.getString("dynamic_sql");
-                        System.out.println("Debug SQL: " + loadSql);
-                    }
-
-                    // Thực thi câu lệnh SQL động
-                    Statement stmt = conn.createStatement();
-                    stmt.execute(loadSql);
-                    System.out.println("SQL executed successfully.");
-//                    9. Insert dữ liệu từ bảng tạm vào staging
-                    // Gọi procedure move_data_to_staging_table
-                    String moveProcedureCall = "{CALL move_data_to_staging_table(?)}";
-                    CallableStatement stmt2 = conn.prepareCall(moveProcedureCall);
-                    stmt2.setDate(1, java.sql.Date.valueOf(todayDate));
-                    stmt2.execute();
-                    System.out.println("Stored procedure move_data_to_staging_table executed successfully.");
-
-                    conn.commit(); // Commit transaction
-                } catch (SQLException e) {
-                    conn.rollback();
-                    throw new RuntimeException("Transaction failed. Rolled back.", e);
-                }
-
-                // Kiểm tra dữ liệu trong bảng staging
-                ResultSet rs = dbHelperStaging.executeQuery("SELECT COUNT(*) AS rowCount FROM stg_lottery_data");
-                if (rs.next()) {
-                    int rowCount = rs.getInt("rowCount");
-                    System.out.println("Rows loaded into staging table: " + rowCount);
-                } else {
-                    System.out.println("No data found in staging table for date: " + todayDate);
-                }
-
-            } catch (SQLException e) {
-                System.err.println("SQL Exception occurred: " + e.getMessage());
-                e.printStackTrace();
-                throw new RuntimeException("Error while executing stored procedure.", e);
-            }
-
-            //10.  Cập nhật log trạng thái "Success"
-            dbHelperCtl.executeUpdate(
-                    "UPDATE controller.logs SET status = 'Success', timeEnd = NOW() WHERE log_id = ?",
-                    logId);
-
-            System.out.println("Dữ liệu đã được load thành công vào staging.");
-//        11. Gửi mail...
-            String recipient = "21130315@st.hcmuaf.edu.vn";
-            String subject = "Thông báo: Quy trình load dữ liệu vào staging hoàn tất";
-            String body = "Chào bạn,\n\nQuy trình load dữ liệu từ file CSV vào staging ngày hôm nay đã hoàn tất thành công.\n\nTrân trọng,\nHệ thống";
-            emailService.sendEmail(recipient, subject, body);
+            //5. Lấy đường dẫn file csv cần load
+            //6. Kết nối đến staging db
+            //7. Xây dựng câu truy vấn load dữ liệu
+            //8. Thực thi câu truy vấn dữ liệu
+            dbHelperStaging.callProcedure("SET GLOBAL local_infile=true;");
+            String sql = """
+                        LOAD DATA LOCAL INFILE ?
+                        INTO TABLE stg_lottery_data
+                        FIELDS TERMINATED BY ','
+                        ENCLOSED BY '"'
+                        LINES TERMINATED BY '\n'
+                        IGNORE 1 LINES
+                        (region, station, @var_date, g1, g2, g3, g41, g42, g51, g52, g53, g54, g55, g56, g57, g6, g71, g72, g73, g8, g9)  
+                        SET lottery_date = STR_TO_DATE(@var_date, '%d-%m-%Y');
+                    """;
+            dbHelperStaging.executeUpdate(sql, destination);
+            var mess = "Loading data from csv file to Staging successfully";
+            System.out.println(mess);
+            //9. Cập nhật trạng thái trong log
+            logService.insertLog(LogFactory.createSuccessStagingLog(configId, mess, TaskName.FILE_TO_STAGING, 1));
+            logService.insertLog(LogFactory.createReadyWarehouseLog(configId, mess, TaskName.FILE_TO_STAGING, 1));
+            //10.Gửi mail thông báo
+            mailService.sendEmail(emailToSend, "KQXs green process 2 - File to staging", mess);
         } catch (SQLException e) {
-            try {
-                // Xử lý lỗi và ghi log Failed"
-                dbHelperCtl.executeUpdate(
-                        "UPDATE controller.logs SET status = 'Failed', log_message = ?, timeEnd = NOW() WHERE log_message = 'Load file to staging'",
-                        e.getMessage());
-            } catch (SQLException innerEx) {
-                throw new RuntimeException("Lỗi khi ghi log trạng thái thất bại.", innerEx);
-            }
-            throw new RuntimeException("Lỗi khi chạy quy trình load file vào staging.", e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void truncateStaging() {
+        System.out.println("Truncating staging database...");
+        String sql = "TRUNCATE TABLE stg_lottery_data";
+        try {
+            dbHelperStaging.callProcedure(sql);
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    // This part belongs to dubanteo19
+    //
+    public void stagingToDW() {
+        if (logService.getCurrentStatus() != LogStatus.READY_WAREHOUSE) {
+            fileToStaging();
+        }
+        var checkingMessage = "Checking if staging is available";
+        System.out.println(checkingMessage);
+        var checkingSql = "{CALL IsStagingDataAvailable(?)}";
+        // 1.1 Checking is staging database has data available
+        // If available then continue otherwise stop and insert log
+        var isAvailable = dbHelperDataWarehouse.executeProcedure(checkingSql);
+        if (!isAvailable) {
+            System.out.println("Staging is not available");
+            logService.insertLog(LogFactory.createFailureWarehouseLog(configId, "Staging is not available", TaskName.STAGING_TO_DW, 1));
+            return;
+        }
+        var readyWarehouseMessage = "Staging is available";
+        System.out.println(readyWarehouseMessage);
+        var checkDuplicatedMessage = "Checking if staging is loaded";
+        System.out.println(checkDuplicatedMessage);
+        //1.2 Checking if staging data is loaded to data warehouse database before
+        // if loaded we just skip it
+        var isLoaded = dbHelperDataWarehouse.executeProcedure("{CALL IsStagingDataLoaded(?)}");
+        if (isLoaded) {
+            System.out.println("Staging is loaded");
+            return;
+        }
+        var loadingWarehouseMessage = "Calling procedure loading from staging to data warehouse";
+        System.out.println(loadingWarehouseMessage);
+        // 1.3 Calling stored procedure that loads data from staging database to data warehouse
+        String sql = "{CALL LoadDataWarehouse()}";
+        try {
+            //1.4 Inserting a log notify that loading is undergone
+            logService.insertLog(LogFactory.createLoadingWarehouseLog(configId, loadingWarehouseMessage, TaskName.STAGING_TO_DW, 1));
+            dbHelperDataWarehouse.procedure(sql);
+            // 1.5 if succeed we insert success log
+            var successWarehouseMessage = "Loading from staging to data warehouse successfully";
+            logService.insertLog(LogFactory.createSuccessWarehouseLog(configId, successWarehouseMessage, TaskName.STAGING_TO_DW, 1));
+            logService.insertLog(LogFactory.createReadyDatamartLog(configId, successWarehouseMessage, TaskName.STAGING_TO_DW, 1));
+            System.out.println(successWarehouseMessage);
+            // 1.6 and send mail
+            mailService.sendEmail(emailToSend, "KQSX green process 3 - Staging to DW result", successWarehouseMessage);
+        } catch (SQLException e) {
+            // if failed a mail will be sent and a log also will be inserted to log table
+            mailService.sendEmail(emailToSend, "[Error]Staging to DW result", e.getMessage());
+            logService.insertLog(LogFactory.createFailureWarehouseLog(configId, e.getMessage(), TaskName.STAGING_TO_DW, 1));
+            throw new RuntimeException(e);
+        }
+    }
+
+    // Phan nay Thuong se chiu trach nhiem
+    public void dwToDM() {
+        // Kiểm tra dữ liệu có sẵn trong data warehouse
+        var checkingMessage = "Checking if data warehouse is available";
+        System.out.println(checkingMessage);
+        var checkingSql = "{CALL IsDataWarehouseAvailable(?)}";  // Giả sử đây là thủ tục lưu trữ kiểm tra tính sẵn có
+        var isAvailable = dbHelperDataWarehouse.executeProcedure(checkingSql);
+        if (!isAvailable) {
+            System.out.println("Data warehouse is not available");
+            logService.insertLog(LogFactory.createFailureWarehouseLog(configId, "Dữ liệu không có sẵn trong kho dữ liệu", TaskName.DW_TO_DM, 1));
+            return;
         }
 
+        // Dữ liệu có sẵn trong data warehouse
+        var readyMessage = "Data warehouse is available";
+        System.out.println(readyMessage);
+        logService.insertLog(LogFactory.createReadyWarehouseLog(configId, readyMessage, TaskName.DW_TO_DM, 1));
 
+        // Kiểm tra xem dữ liệu đã được tải lên data mart chưa
+        var checkDuplicatedMessage = "Checking if data mart is loaded";
+        System.out.println(checkDuplicatedMessage);
+        var isLoaded = dbHelperDataWarehouse.executeProcedure("{CALL IsDataLoadedToDM(?)}");  // Thủ tục kiểm tra đã tải chưa
+        if (isLoaded) {
+            System.out.println("Data mart is loaded");
+            logService.insertLog(LogFactory.createSuccessDatamartLog(configId, "Dữ liệu đã được tải lên kho dữ liệu mart", TaskName.DW_TO_DM, 1));
+            return;
+        }
+
+        // Tiến hành tải dữ liệu từ data warehouse sang data mart
+        var loadingMessage = "Calling procedure loading from data warehouse to data mart";
+        System.out.println(loadingMessage);
+        logService.insertLog(LogFactory.createLoadingDatamartLog(configId, loadingMessage, TaskName.DW_TO_DM, 1));
+        String sql = "{CALL LoadDataMart()}";
+        try {
+            dbHelperDataWarehouse.procedure(sql);
+            var successMessage = "Loading from data warehouse to data mart successfully";
+            System.out.println(successMessage);
+            logService.insertLog(LogFactory.createSuccessDatamartLog(configId, successMessage, TaskName.DW_TO_DM, 1));
+            mailService.sendEmail(Constant.DEFAULT_EMAIL, "Processing 4", successMessage);
+        } catch (SQLException e) {
+            var errorMessage = "Error when loading from data warehouse to data mart" + e.getMessage();
+            System.out.println(errorMessage);
+            logService.insertLog(LogFactory.createFailureDatamartLog(configId, errorMessage, TaskName.DW_TO_DM, 1));
+            throw new RuntimeException(e);
+        }
     }
 
 
+    public void auto(String lotteryDate) {
+        try {
+            this.setDate(lotteryDate);
+            crawl();
+            Thread.sleep(200);
+            fileToStaging();
+            Thread.sleep(200);
+            stagingToDW();
+       
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
+
+    private void archive(int totalDays) {
+        LocalDate currentDate = LocalDate.now().minusDays(1);
+        for (int i = 0; i < totalDays; i++) {
+            String formattedDate = currentDate.format(DATE_FOMATTER);
+            auto(formattedDate);
+            currentDate = currentDate.minusDays(1);
+        }
+    }
+
+    public void setDate(String lotteryDate) {
+        this.lotteryDate = lotteryDate;
+    }
 }
