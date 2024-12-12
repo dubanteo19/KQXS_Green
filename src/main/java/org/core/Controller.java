@@ -114,7 +114,6 @@ public class Controller {
     public void fileToStaging() {
         var currentStatus = logService.getCurrentStatus();
         if (currentStatus != (LogStatus.READY_FILE)) {
-            System.out.println(currentStatus);
             crawl();
         }
         truncateStaging();
@@ -154,6 +153,7 @@ public class Controller {
     // This part belongs to dubanteo19
     //
     public void stagingToDW() {
+        // 1.0 checking current status
         if (logService.getCurrentStatus() != LogStatus.READY_WAREHOUSE) {
             fileToStaging();
         }
@@ -164,6 +164,7 @@ public class Controller {
         // If available then continue otherwise stop and insert log
         var isAvailable = dbHelperDataWarehouse.executeProcedure(checkingSql);
         if (!isAvailable) {
+            //1.1.2 Insert failure warehouse log
             System.out.println("Staging is not available");
             logService.insertLog(LogFactory.createFailureWarehouseLog(configId, "Staging is not available", TaskName.STAGING_TO_DW, 1));
             return;
@@ -176,27 +177,30 @@ public class Controller {
         // if loaded we just skip it
         var isLoaded = dbHelperDataWarehouse.executeProcedure("{CALL IsStagingDataLoaded(?)}");
         if (isLoaded) {
+            //1.2.2 Print error to screen
             System.out.println("Staging is loaded");
             return;
         }
         var loadingWarehouseMessage = "Calling procedure loading from staging to data warehouse";
         System.out.println(loadingWarehouseMessage);
-        // 1.3 Calling stored procedure that loads data from staging database to data warehouse
         String sql = "{CALL LoadDataWarehouse()}";
         try {
-            //1.4 Inserting a log notify that loading is undergone
+            //1.3 Inserting a log notify that loading is undergone
             logService.insertLog(LogFactory.createLoadingWarehouseLog(configId, loadingWarehouseMessage, TaskName.STAGING_TO_DW, 1));
+            // 1.4 call procedure loading from staging to data warehouse
             dbHelperDataWarehouse.procedure(sql);
-            // 1.5 if succeed we insert success log
             var successWarehouseMessage = "Loading from staging to data warehouse successfully";
+            // 1.5 if succeed we insert success warehouse log
             logService.insertLog(LogFactory.createSuccessWarehouseLog(configId, successWarehouseMessage, TaskName.STAGING_TO_DW, 1));
+            // 1.6 Insert ready datamart log
             logService.insertLog(LogFactory.createReadyDatamartLog(configId, successWarehouseMessage, TaskName.STAGING_TO_DW, 1));
             System.out.println(successWarehouseMessage);
-            // 1.6 and send mail
+            // 1.7 and send mail
             mailService.sendEmail(emailToSend, "KQSX green process 3 - Staging to DW result", successWarehouseMessage);
         } catch (SQLException e) {
-            // if failed a mail will be sent and a log also will be inserted to log table
+            //1.4.2 if failed a mail will be sent and a log also will be inserted to log table
             mailService.sendEmail(emailToSend, "[Error]Staging to DW result", e.getMessage());
+            //1.4.3 if failed a mail will be sent and a log also will be inserted to log table
             logService.insertLog(LogFactory.createFailureWarehouseLog(configId, e.getMessage(), TaskName.STAGING_TO_DW, 1));
             throw new RuntimeException(e);
         }

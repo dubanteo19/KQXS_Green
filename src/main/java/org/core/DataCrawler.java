@@ -10,10 +10,7 @@ import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class DataCrawler {
     String baseUrl;
@@ -109,6 +106,7 @@ public class DataCrawler {
             temp.add(date);
             kqxs.put(station, temp);
         }
+        Collections.reverse(elements);
         for (Element element : elements) {
             String value = element.attr("data-value");
             int numberOfColumns = regionCode == 2 ? 3 : 2;
@@ -116,6 +114,7 @@ public class DataCrawler {
             kqxs.get(stations.get(stationIndex)).add(value);
             count++;
         }
+
         exportCSV(kqxs);
     }
 
@@ -154,12 +153,15 @@ public class DataCrawler {
             kqxs.add(this.region);
             kqxs.add(this.station);
             kqxs.add(this.date);
-            int count = 1;
+            List<String> temp = new ArrayList<>();
             for (Element element : elements) {
-                System.out.println("Crawling date");
+                System.out.println("Crawling with date");
                 String value = element.attr("data-value");
-                kqxs.add(value);
+                temp.add(value);
             }
+            Collections.reverse(temp);
+            System.out.println(temp);
+            kqxs.addAll(temp);
             addRow(kqxs);
         }
     }
@@ -168,7 +170,7 @@ public class DataCrawler {
         try {
             System.out.println("Writing header");
             FileWriter fw = new FileWriter(fileName, false);
-            fw.write("region,station,date,g1,g2,g3,g41,g42,g51,g52,g53,g54,g55,g56,g57,g6,g71,g72,g73,g8,g9\n");
+            fw.write("region,station,lottery_date,g1,g2,g3,g41,g42,g51,g52,g53,g54,g55,g56,g57,g6,g71,g72,g73,g8,g9,\n");
             fw.flush();
             fw.close();
         } catch (IOException e) {
